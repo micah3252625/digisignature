@@ -1,65 +1,83 @@
-var express = require("express");
-var router = express.Router();
-let crypto = require("crypto");
+const fs = require("fs");
+const crypto = require("crypto");
+const express = require("express");
+const router = express.Router();
+
+// Use environment variables for sensitive file paths
+const privateKeyPath =
+  process.env.PRIVATE_KEY_PATH || "./public/certificates/private_key.pem";
+const publicKeyPath =
+  process.env.PUBLIC_KEY_PATH || "./public/certificates/public_key.pem";
+
 /* GET home page. */
 router.get("/", function (req, res, next) {
   res.render("index", { title: "Express" });
 });
 
-// localhost:3000/generate-key-pair
-router.get("/generate-key-pair", (req, res) => {
-  const { publicKey, privateKey } = crypto.generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding: {
-      type: "spki",
-      format: "der",
-    },
-    privateKeyEncoding: {
-      type: "pkcs8",
-      format: "der",
-    },
-  });
+// Input validation
+function validateIput(input) {
+  if (typeof input !== "string" || input.trim() === "") {
+    throw new Error("Invalid input: Input must be a non-empty string");
+  }
+}
 
-  res.send({
-    publicKey: publicKey.toString("base64"),
-    privateKey: privateKey.toString("base64"),
+// Error handling middleware for safe responses
+function handleErrors(err, req, res, next) {
+  console.log(err.stack);
+  res.status(500).send({
+    message: "An internal error occured",
   });
+}
+
+// Signing route
+router.post("/sign", (req, res, next) => {
+  try {
+    let data = req.body.data;
+
+    // validate input
+    validateIput(data);
+
+    // Read the private key from the file system
+    const privateKey = fs.readFileSync(privateKeyPath, "utf8");
+
+    // Create the sign object
+    const sign = crypto.createSign("SHA256");
+    sign.update(data);
+    sign.end();
+
+    // Sign the data using the private key
+    const signature = sign.sign(privateKey).toString("base64");
+
+    res.send({ data, signature });
+  } catch (err) {
+    next(err); // Pass errors to the error handler
+  }
 });
 
-//
-router.post("/sign", (req, res) => {
-  let data = req.body.data;
-  let privateKey = req.body.privateKey;
+router.post("/verify", (req, res, next) => {
+  try {
+    let { data, signature } = req.body;
 
-  privateKey = crypto.createPrivateKey({
-    key: Buffer.from(privateKey, "base64"),
-    type: "pkcs8",
-    format: "der",
-  });
+    // Read the public key from the PEM file
+    const publicKeyPem = fs.readFileSync(publicKeyPath, "utf8");
 
-  const sign = crypto.createSign("SHA256");
-  sign.update(data);
-  sign.end();
+    // Create a public key object using the PEM certificate
+    const publicKey = crypto.createPublicKey(publicKeyPem);
 
-  const signature = sign.sign(privateKey).toString("base64");
+    // Create the verify object
+    const verify = crypto.createVerify("SHA256");
+    verify.update(data);
+    verify.end();
 
-  res.send({ data, signature });
+    // Verify the signature using the public key
+    const isVerified = verify.verify(
+      publicKey,
+      Buffer.from(signature, "base64")
+    );
+
+    res.send({ verify: isVerified });
+  } catch (err) {
+    next(err);
+  }
 });
-
-router.post("/verify", (req, res) => {
-  let { data, publicKey, signature } = req.body;
-  publicKey = crypto.createPublicKey({
-    key: Buffer.from(publicKey, "base64"),
-    type: "spki",
-    format: "der",
-  });
-
-  const verify = crypto.createVerify("SHA256");
-  verify.update(data);
-  verify.end();
-
-  let result = verify.verify(publicKey, Buffer.from(signature, "base64"));
-  res.send({ verify: result });
-});
-
 module.exports = router;
